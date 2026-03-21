@@ -1,0 +1,13 @@
+[project]
+name = "nfl-mcp"
+version = "0.1.0"
+description = "MCP server for querying NFL play-by-play data from nflfastR/nflverse using natural language"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.18.0",
+    "nfl_data_py>=0.3.0",
+    "pandas>=2.0.0",
+]
+
+[project.scripts]
+nfl-mcp = "nfl_mcp.server:main"
