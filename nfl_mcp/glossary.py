@@ -18,6 +18,17 @@ GLOSSARY = {
         "usage": "Higher EPA/play = better performance. League average is ~0.00.",
         "available_from": 1999,
     },
+    "qb_epa": {
+        "name": "QB-Adjusted EPA",
+        "description": (
+            "Like EPA but adjusted for QB evaluation. On completed passes where "
+            "the receiver fumbles, standard EPA charges the full play outcome to "
+            "the passer. qb_epa instead gives the QB credit only up to the spot "
+            "of the fumble, which is fairer for QB evaluation."
+        ),
+        "usage": "Use AVG(qb_epa) instead of AVG(epa) for QB-specific analysis.",
+        "available_from": 1999,
+    },
     "wpa": {
         "name": "Win Probability Added (WPA)",
         "description": (

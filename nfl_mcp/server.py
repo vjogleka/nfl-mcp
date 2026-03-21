@@ -96,7 +96,7 @@ class NflQueryInput(BaseModel):
             "A SELECT SQL query to run against the NFL database. "
             "Only SELECT queries are allowed. "
             "Available tables: pbp (play-by-play), player_stats (weekly), "
-            "seasonal_stats (season totals), rosters, schedules. "
+            "seasonal_stats (season totals), rosters, schedules, teams (colors/logos/divisions). "
             "Use the nfl_schema tool first to see column names."
         ),
         min_length=5,
@@ -195,7 +195,7 @@ class NflSchemaInput(BaseModel):
         default=None,
         description=(
             "Specific table to describe: 'pbp', 'player_stats', "
-            "'seasonal_stats', 'rosters', or 'schedules'. "
+            "'seasonal_stats', 'rosters', 'schedules', or 'teams'. "
             "Leave empty to get all tables."
         ),
     )
@@ -278,6 +278,7 @@ async def nfl_schema(params: NflSchemaInput, ctx: Context) -> str:
     - seasonal_stats: Full-season aggregated player statistics
     - rosters: Player rosters with position, height, weight, college, etc.
     - schedules: Game schedules with scores, spreads, and weather
+    - teams: Team metadata with colors, logos, divisions, and conferences
 
     Args:
         params: NflSchemaInput with optional table name and sample column.
@@ -591,6 +592,17 @@ def query_tips_resource() -> str:
 - Use the `nfl_roster` tool for quick team roster lookups
 - For custom roster queries, the rosters table has: player_name, position,
   jersey_number, height, weight, college, birth_date, years_exp, status, team, season
+
+## Team Metadata (for visualizations)
+- The `teams` table has: team_abbr, team_name, team_color, team_color2,
+  team_logo_wikipedia, team_logo_espn, team_division, team_conference
+- Join to PBP: `JOIN teams ON pbp.posteam = teams.team_abbr`
+- Useful for coloring charts by team or grouping by division/conference
+
+## QB-Specific Metrics
+- `qb_epa`: Like EPA but gives QBs credit only up to the fumble spot on
+  completed passes with fumbles lost (fairer QB evaluation)
+- CPOE vs EPA/play scatter plots are a classic QB evaluation chart
 """
 
 

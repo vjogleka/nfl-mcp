@@ -43,7 +43,7 @@ PBP_COLUMNS = [
     "complete_pass", "incomplete_pass", "pass_attempt",
     "rush_attempt", "penalty", "penalty_yards",
     # nflfastR model fields
-    "epa", "wp", "wpa", "cpoe", "cp",
+    "epa", "qb_epa", "wp", "wpa", "cpoe", "cp",
     "success",
     "xyac_epa", "xyac_mean_yardage",
     # Play type flags (nflfastR-computed)
@@ -149,6 +149,14 @@ def load_schedules(seasons: list[int]) -> pd.DataFrame:
     return schedules
 
 
+def load_teams() -> pd.DataFrame:
+    """Download team descriptions (colors, logos, divisions, conferences)."""
+    logger.info("Downloading team descriptions")
+    teams = nfl.import_team_desc()
+    logger.info(f"Loaded {len(teams):,} teams")
+    return teams
+
+
 def build_database(
     db_path: Path | None = None,
     seasons: list[int] | None = None,
@@ -168,7 +176,7 @@ def build_database(
     """
     db_path = db_path or get_db_path()
     seasons = seasons or get_seasons()
-    tables = tables or ["pbp", "player_stats", "seasonal_stats", "rosters", "schedules"]
+    tables = tables or ["pbp", "player_stats", "seasonal_stats", "rosters", "schedules", "teams"]
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info(f"Building database at {db_path} for seasons {seasons}")
@@ -200,6 +208,11 @@ def build_database(
             schedules = load_schedules(seasons)
             schedules.to_sql("schedules", conn, if_exists="replace", index=False)
             logger.info("Wrote schedules table")
+
+        if "teams" in tables:
+            teams = load_teams()
+            teams.to_sql("teams", conn, if_exists="replace", index=False)
+            logger.info("Wrote teams table")
 
         # Create indexes for common query patterns
         _create_indexes(conn)
@@ -246,6 +259,8 @@ def _create_indexes(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_sched_week ON schedules(season, week)",
         "CREATE INDEX IF NOT EXISTS idx_sched_home ON schedules(home_team)",
         "CREATE INDEX IF NOT EXISTS idx_sched_away ON schedules(away_team)",
+        # Team indexes
+        "CREATE INDEX IF NOT EXISTS idx_teams_abbr ON teams(team_abbr)",
     ]
     for idx_sql in indexes:
         try:
