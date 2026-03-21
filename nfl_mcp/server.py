@@ -161,6 +161,32 @@ class NflGlossaryInput(BaseModel):
     )
 
 
+class NflRosterInput(BaseModel):
+    """Input for fetching a team roster."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    team: str = Field(
+        ...,
+        description=(
+            "Team abbreviation, name, city, or nickname. "
+            "Examples: 'KC', 'Chiefs', 'Kansas City'. "
+            "Use nfl_team_lookup first if unsure of the abbreviation."
+        ),
+        min_length=2,
+        max_length=50,
+    )
+    season: Optional[int] = Field(
+        default=None,
+        description="Season year (e.g., 2024). Defaults to the most recent season available.",
+        ge=1999,
+        le=2026,
+    )
+    position: Optional[str] = Field(
+        default=None,
+        description="Optional position filter: QB, RB, WR, TE, OL, DL, LB, CB, S, K, P, etc.",
+    )
+
+
 class NflSchemaInput(BaseModel):
     """Input for getting database schema info."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -437,6 +463,83 @@ async def nfl_team_lookup(params: NflTeamLookupInput) -> str:
     )
 
 
+@mcp.tool(
+    name="nfl_roster",
+    annotations={
+        "title": "Get NFL Team Roster",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def nfl_roster(params: NflRosterInput, ctx: Context) -> str:
+    """Get the roster for an NFL team, with optional season and position filters.
+
+    Returns player names, positions, jersey numbers, height, weight, college,
+    age, and years of experience. Useful for answering questions like:
+    - "Who is on the Chiefs roster?"
+    - "Show me all the QBs on the Bears in 2024"
+    - "What college did the Packers' wide receivers attend?"
+
+    Args:
+        params: NflRosterInput with team, optional season and position.
+
+    Returns:
+        Team roster formatted as a markdown table.
+    """
+    state: AppState = ctx.request_context.lifespan_state
+    engine = state.engine
+
+    # Resolve team name to abbreviation
+    abbr = resolve_team(params.team)
+    if not abbr:
+        return (
+            f"Could not resolve team '{params.team}'. "
+            "Use nfl_team_lookup to find the correct abbreviation."
+        )
+
+    # Determine season: use provided or find the latest available
+    if params.season:
+        season = params.season
+    else:
+        latest = engine.execute_query(
+            "SELECT MAX(season) as max_season FROM rosters"
+        )
+        if latest["rows"]:
+            season = latest["rows"][0]["max_season"]
+        else:
+            return "No roster data available in the database."
+
+    conditions = [f"team = '{abbr}'", f"season = {season}"]
+    if params.position:
+        conditions.append(f"position = '{params.position.upper()}'")
+
+    where = " AND ".join(conditions)
+    sql = (
+        f"SELECT player_name, position, jersey_number, height, weight, "
+        f"college, birth_date, years_exp, status "
+        f"FROM rosters WHERE {where} "
+        f"ORDER BY position, player_name LIMIT 200"
+    )
+
+    results = engine.execute_query(sql)
+
+    if results["row_count"] == 0:
+        msg = f"No roster entries found for {abbr} in {season}"
+        if params.position:
+            msg += f" at position {params.position.upper()}"
+        msg += ". The roster data may not be available for this season."
+        return msg
+
+    header = f"## {abbr} Roster — {season}"
+    if params.position:
+        header += f" ({params.position.upper()})"
+    header += f"\n\n"
+
+    return header + engine.format_results_markdown(results)
+
+
 # ---------------------------------------------------------------------------
 # Resources (static context for Claude)
 # ---------------------------------------------------------------------------
@@ -483,6 +586,11 @@ def query_tips_resource() -> str:
 - PBP ↔ Rosters: Join on passer_player_id = gsis_id (or similar)
 - PBP ↔ Schedules: Join on game_id
 - Player Stats ↔ Rosters: Join on player_id / gsis_id + season
+
+## Roster Queries
+- Use the `nfl_roster` tool for quick team roster lookups
+- For custom roster queries, the rosters table has: player_name, position,
+  jersey_number, height, weight, college, birth_date, years_exp, status, team, season
 """
 
 

@@ -20,7 +20,7 @@ Claude translates your question into SQL, runs it against the local database, an
 You (plain English) → Claude Code → MCP Tools → SQLite (nflverse data) → Results
 ```
 
-The server exposes 5 tools:
+The server exposes 6 tools:
 
 | Tool | Purpose |
 |---|---|
@@ -29,6 +29,7 @@ The server exposes 5 tools:
 | `nfl_glossary` | Look up metric definitions (EPA, CPOE, etc.) |
 | `nfl_search_player` | Find player names and IDs |
 | `nfl_team_lookup` | Resolve team names to abbreviations |
+| `nfl_roster` | Get a team's roster by season and position |
 
 ## Setup
 
