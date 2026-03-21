@@ -136,7 +136,7 @@ def load_seasonal_stats(seasons: list[int]) -> pd.DataFrame:
 def load_rosters(seasons: list[int]) -> pd.DataFrame:
     """Download roster data."""
     logger.info(f"Downloading rosters for seasons: {seasons}")
-    rosters = nfl.import_rosters(seasons)
+    rosters = nfl.import_seasonal_rosters(seasons)
     logger.info(f"Loaded {len(rosters):,} roster entries")
     return rosters
 
