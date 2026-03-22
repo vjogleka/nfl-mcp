@@ -11,16 +11,20 @@ Ask questions like:
 - "How did the Bears' pass defense rank in 2024?"
 - "Compare Caleb Williams and Jayden Daniels' rookie seasons"
 - "Show me the most efficient offenses on early downs in neutral game script"
+- "Visualize Drake Maye's 2025 season progression"
+- "Compare the 2024 draft class QBs across their first two years"
 
-Claude translates your question into SQL, runs it against the local database, and interprets the results.
+The database covers **every play, player, and team** since 1999 — not just QBs. You can analyze receivers, rushers, team units, matchups, game scripts, and more.
+
+Claude translates your question into SQL, runs it against the local database, and interprets the results. It can also generate **interactive HTML dashboards** with charts you can hover, click, and toggle — right from a natural language request.
 
 ## Architecture
 
 ```
-You (plain English) → Claude Code → MCP Tools → SQLite (nflverse data) → Results
+You (plain English) → Claude Code → MCP Tools → SQLite (nflverse data) → Results / Visualizations
 ```
 
-The server exposes 6 tools:
+The server exposes 8 tools:
 
 | Tool | Purpose |
 |---|---|
@@ -30,6 +34,8 @@ The server exposes 6 tools:
 | `nfl_search_player` | Find player names and IDs |
 | `nfl_team_lookup` | Resolve team names to abbreviations |
 | `nfl_roster` | Get a team's roster by season and position |
+| `nfl_visualize` | Generate an interactive single-QB season dashboard |
+| `nfl_compare_qbs` | Generate a multi-QB comparison dashboard |
 
 ## Setup
 
@@ -127,6 +133,65 @@ In Claude Code, just ask NFL questions:
 > Show me red zone efficiency by team for the 2024 regular season
 ```
 
+## Interactive Visualizations
+
+The server can generate self-contained HTML dashboards with interactive SVG charts — no external dependencies, just open in a browser.
+
+### Via MCP (ask Claude naturally)
+
+When using Claude with the NFL MCP connected, just ask:
+
+```
+> Visualize Caleb Williams' 2025 season
+
+> Compare Caleb Williams, Drake Maye, Jayden Daniels, Michael Penix,
+  and Bo Nix across 2024 and 2025
+```
+
+Claude calls `nfl_visualize` or `nfl_compare_qbs` and returns HTML that you can save and open in your browser.
+
+### Via CLI (standalone)
+
+You can also generate dashboards directly from the command line:
+
+```bash
+# Single QB dashboard
+python generate_dashboard.py
+python generate_dashboard.py --player P.Mahomes --team KC --name "Patrick Mahomes"
+python generate_dashboard.py --player J.Hurts --season 2024 --output hurts_2024.html
+
+# Multi-QB comparison
+python generate_comparison.py
+python generate_comparison.py --players P.Mahomes J.Allen L.Jackson \
+                              --names "Patrick Mahomes" "Josh Allen" "Lamar Jackson" \
+                              --seasons 2023,2024,2025
+
+# Then open in your browser
+open draft_class_2024_comparison.html
+```
+
+### What's in the dashboards
+
+**Single QB (`nfl_visualize` / `generate_dashboard.py`):**
+- KPI cards with year-over-year changes
+- EPA/play, CPOE, and success rate by week with toggleable 3-game rolling averages
+- Passing yards, TDs, and INTs volume chart
+- QB landscape scatter plot (CPOE vs EPA, all qualifying QBs)
+- Season comparison summary table
+
+**Multi-QB (`nfl_compare_qbs` / `generate_comparison.py`):**
+- QB toggle buttons (click to show/hide players) with team colors
+- Grouped bar charts comparing EPA, CPOE, and success rate by season
+- CPOE vs EPA scatter with season toggle
+- Weekly trend lines with metric and season selectors
+- Full comparison table with color-coded year-over-year deltas
+
+All charts include hover tooltips, and the HTML files are fully self-contained (~30-50KB each) — no internet connection or dependencies needed to view them.
+
+### Note on scope
+
+The dedicated visualization tools (`nfl_visualize`, `nfl_compare_qbs`) currently focus on QB analysis. For other positions and team-level analysis, use `nfl_query` to pull the data — Claude can help you interpret the results in tables and text. Additional visualization tools for team rankings, WR/RB comparisons, and matchup analysis are on the roadmap.
+
 ## Configuration
 
 Environment variables:
@@ -151,20 +216,26 @@ python -m nfl_mcp --init
 
 ## Database Tables
 
-### `pbp` - Play-by-Play
-The core table. One row per play with 80+ columns including EPA, WPA, CPOE, player names, game context, and drive/series info. Going back to 1999.
+| Table | Rows | Description |
+|---|---|---|
+| `pbp` | 1.5M+ | One row per play with 80+ columns: EPA, WPA, CPOE, player IDs, game context, drive/series info (1999-present) |
+| `player_stats` | — | Per-player, per-week stats: completions, attempts, yards, TDs, targets, receptions, rushing, receiving |
+| `seasonal_stats` | — | Per-player, per-season totals for the same metrics |
+| `rosters` | — | Player metadata: full name, position, height, weight, college, jersey number, years of experience |
+| `schedules` | — | Game-level data: teams, final scores, spreads, over/unders, weather, stadium, roof type |
+| `teams` | 32 | Team colors, logos, divisions, conferences (for visualization styling) |
 
-### `player_stats` - Weekly Player Stats
-Per-player, per-week aggregated stats (completions, attempts, yards, TDs, etc.).
+### What you can query
 
-### `seasonal_stats` - Season Player Stats
-Per-player, per-season aggregated stats.
+The data supports analysis across **all positions and team units**, not just QBs:
 
-### `rosters` - Team Rosters
-Player metadata: full name, position, height, weight, college, jersey number, etc.
-
-### `schedules` - Game Schedules
-Game-level data: teams, scores, spreads, over/unders, weather, stadium info.
+- **QBs**: EPA/play, CPOE, success rate, air yards, pressure rate
+- **WRs/TEs**: Targets, receptions, YAC, receiving EPA, route efficiency
+- **RBs**: Rushing EPA, yards before/after contact, success rate by down
+- **Team offense/defense**: Unit-level EPA, success rate, explosiveness
+- **Game script**: Performance by win probability, score differential, quarter
+- **Situational**: Red zone, 3rd down, 2-minute drill, no-huddle, shotgun
+- **Historical**: Any season back to 1999, cross-era comparisons
 
 ## Key Metrics
 
@@ -180,14 +251,22 @@ Game-level data: teams, scores, spreads, over/unders, weather, stadium info.
 ## Common Query Patterns
 
 ```sql
--- EPA/play leaders (QBs, min 200 dropbacks)
+-- QB EPA/play leaders (min 200 dropbacks)
 SELECT passer_player_name, AVG(epa) as epa_play, COUNT(*) as plays
 FROM pbp
 WHERE season = 2024 AND season_type = 'REG' AND pass = 1
   AND passer_player_name IS NOT NULL
-GROUP BY passer_player_name
-HAVING COUNT(*) >= 200
+GROUP BY passer_player_name HAVING COUNT(*) >= 200
 ORDER BY epa_play DESC
+
+-- WR receiving EPA leaders
+SELECT receiver_player_name, AVG(epa) as epa_target,
+  COUNT(*) as targets, SUM(complete_pass) as receptions
+FROM pbp
+WHERE season = 2024 AND season_type = 'REG' AND pass = 1
+  AND receiver_player_name IS NOT NULL
+GROUP BY receiver_player_name HAVING COUNT(*) >= 60
+ORDER BY epa_target DESC
 
 -- Team offensive efficiency
 SELECT posteam, AVG(epa) as epa_play, AVG(success) as success_rate
@@ -196,7 +275,14 @@ WHERE season = 2024 AND season_type = 'REG' AND (pass = 1 OR rush = 1)
 GROUP BY posteam
 ORDER BY epa_play DESC
 
--- Red zone TD rate
+-- Team defensive EPA (lower = better)
+SELECT defteam, AVG(epa) as epa_allowed, AVG(success) as opp_success
+FROM pbp
+WHERE season = 2024 AND season_type = 'REG' AND (pass = 1 OR rush = 1)
+GROUP BY defteam
+ORDER BY epa_allowed ASC
+
+-- Red zone TD rate by team
 SELECT posteam,
   SUM(CASE WHEN touchdown = 1 THEN 1 ELSE 0 END) * 1.0 / COUNT(*) as td_rate,
   COUNT(*) as plays
@@ -205,6 +291,15 @@ WHERE season = 2024 AND season_type = 'REG'
   AND yardline_100 <= 20 AND (pass = 1 OR rush = 1)
 GROUP BY posteam
 ORDER BY td_rate DESC
+
+-- RB rushing efficiency (min 100 carries)
+SELECT rusher_player_name, AVG(epa) as epa_rush,
+  AVG(success) as success_rate, COUNT(*) as carries
+FROM pbp
+WHERE season = 2024 AND season_type = 'REG' AND rush = 1
+  AND rusher_player_name IS NOT NULL
+GROUP BY rusher_player_name HAVING COUNT(*) >= 100
+ORDER BY epa_rush DESC
 ```
 
 ## License
