@@ -6,8 +6,9 @@ dist/
 build/
 *.db
 .DS_Store
-# Local analysis artifacts
-caleb_williams_report.py
-caleb_williams_2025_report.png
-declining_qbs_2025.png
+# Generated output artifacts
+*.png
 *_dashboard.html
+
+# Legacy one-off scripts
+caleb_williams_report.py
