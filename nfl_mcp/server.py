@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from nfl_mcp.data import build_database, db_exists, get_db_path, get_seasons
 from nfl_mcp.glossary import get_glossary_text, resolve_team, TEAM_ALIASES, GLOSSARY
 from nfl_mcp.query_engine import QueryEngine
+from nfl_mcp.visualize import generate_qb_dashboard
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,41 @@ class NflSchemaInput(BaseModel):
             "If provided along with a table, show distinct sample values "
             "for this column (useful for understanding enums like play_type, position)."
         ),
+    )
+
+
+class NflVisualizeInput(BaseModel):
+    """Input for generating an interactive QB dashboard."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    player_name: str = Field(
+        ...,
+        description=(
+            "QB name as it appears in passer_player_name (e.g., 'C.Williams', "
+            "'P.Mahomes', 'J.Hurts'). Use nfl_search_player first if unsure."
+        ),
+        min_length=2,
+        max_length=100,
+    )
+    display_name: Optional[str] = Field(
+        default=None,
+        description="Human-friendly display name (e.g., 'Caleb Williams'). Defaults to player_name.",
+    )
+    team: Optional[str] = Field(
+        default=None,
+        description="Team abbreviation for colors (e.g., 'CHI'). Auto-detected if omitted.",
+    )
+    season: int = Field(
+        default=2025,
+        description="Season to visualize.",
+        ge=2006,
+        le=2026,
+    )
+    min_dropbacks: int = Field(
+        default=200,
+        description="Minimum dropbacks for QB comparison scatter plot.",
+        ge=50,
+        le=600,
     )
 
 
@@ -539,6 +575,136 @@ async def nfl_roster(params: NflRosterInput, ctx: Context) -> str:
     header += f"\n\n"
 
     return header + engine.format_results_markdown(results)
+
+
+@mcp.tool(
+    name="nfl_visualize",
+    annotations={
+        "title": "Generate Interactive QB Dashboard",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def nfl_visualize(params: NflVisualizeInput, ctx: Context) -> str:
+    """Generate an interactive HTML dashboard for a QB's season performance.
+
+    Creates a self-contained HTML page with inline SVG charts and JavaScript
+    interactivity. The dashboard includes:
+    - KPI cards with year-over-year changes
+    - EPA/play, CPOE, and success rate by week (with toggleable rolling averages)
+    - Passing yards, TDs, and INTs volume chart
+    - QB landscape scatter plot (CPOE vs EPA)
+    - Season comparison summary table
+
+    All charts have hover tooltips and interactive toggle buttons. The HTML
+    file requires no external dependencies — just open in a browser.
+
+    Args:
+        params: NflVisualizeInput with player name, season, and options.
+
+    Returns:
+        The generated HTML content as a string.
+    """
+    state: AppState = ctx.request_context.lifespan_state
+    engine = state.engine
+
+    pname = params.player_name
+    season = params.season
+    display = params.display_name or pname
+
+    # Detect team if not provided
+    team_abbr = params.team
+    if not team_abbr:
+        team_result = engine.execute_query(
+            f"SELECT posteam FROM pbp WHERE passer_player_name = '{pname}' "
+            f"AND season = {season} AND posteam IS NOT NULL LIMIT 1"
+        )
+        if team_result["rows"]:
+            team_abbr = team_result["rows"][0]["posteam"]
+
+    # Fetch team colors
+    primary, accent = "#333333", "#e64100"
+    if team_abbr:
+        tc = engine.execute_query(
+            f"SELECT team_color, team_color2 FROM teams WHERE team_abbr = '{team_abbr}'"
+        )
+        if tc["rows"]:
+            primary = tc["rows"][0].get("team_color") or primary
+            accent = tc["rows"][0].get("team_color2") or accent
+
+    # Prepend '#' if missing
+    if primary and not primary.startswith("#"):
+        primary = "#" + primary
+    if accent and not accent.startswith("#"):
+        accent = "#" + accent
+
+    # Weekly stats
+    weekly_result = engine.execute_query(f"""
+        SELECT week,
+               COUNT(*) as dropbacks,
+               AVG(qb_epa) as epa_play,
+               AVG(cpoe) as cpoe,
+               AVG(success) as success_rate,
+               AVG(CASE WHEN complete_pass=1 THEN 1.0 ELSE 0.0 END) as comp_pct,
+               SUM(passing_yards) as pass_yards,
+               SUM(touchdown) as tds,
+               SUM(interception) as ints
+        FROM pbp
+        WHERE passer_player_name = '{pname}' AND pass = 1
+              AND season = {season} AND season_type = 'REG'
+              AND qb_epa IS NOT NULL
+        GROUP BY week ORDER BY week
+    """)
+
+    if weekly_result["row_count"] == 0:
+        return f"No data found for {pname} in {season}. Check the player name with nfl_search_player."
+
+    weekly_data = weekly_result["rows"]
+
+    # Season comparison (all seasons for this player)
+    season_result = engine.execute_query(f"""
+        SELECT season,
+               COUNT(*) as dropbacks,
+               AVG(qb_epa) as epa_play,
+               AVG(cpoe) as cpoe,
+               AVG(success) as success_rate,
+               SUM(passing_yards) as pass_yards,
+               SUM(touchdown) as tds,
+               SUM(interception) as ints
+        FROM pbp
+        WHERE passer_player_name = '{pname}' AND pass = 1
+              AND season_type = 'REG' AND qb_epa IS NOT NULL
+        GROUP BY season ORDER BY season
+    """)
+    season_data = season_result["rows"]
+
+    # QB comparison scatter
+    qb_result = engine.execute_query(f"""
+        SELECT passer_player_name as name,
+               COUNT(*) as dropbacks,
+               AVG(qb_epa) as epa_play,
+               AVG(cpoe) as cpoe
+        FROM pbp
+        WHERE pass = 1 AND season = {season} AND season_type = 'REG'
+              AND qb_epa IS NOT NULL AND passer_player_name IS NOT NULL
+        GROUP BY passer_player_name
+        HAVING COUNT(*) >= {params.min_dropbacks}
+        ORDER BY epa_play DESC
+    """)
+    qb_comparison = qb_result["rows"]
+
+    html = generate_qb_dashboard(
+        player_name=display,
+        weekly_data=weekly_data,
+        season_data=season_data,
+        qb_comparison=qb_comparison,
+        team_colors={"primary": primary, "accent": accent},
+        season=season,
+    )
+
+    return html
 
 
 # ---------------------------------------------------------------------------
