@@ -6,3 +6,10 @@ dist/
 build/
 *.db
 .DS_Store
+# Generated output artifacts
+*.png
+*_dashboard.html
+*_comparison.html
+
+# Legacy one-off scripts
+caleb_williams_report.py
