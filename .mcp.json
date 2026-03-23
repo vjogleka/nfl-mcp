@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "nfl": {
+      "command": "python",
+      "args": ["-m", "nfl_mcp"],
+      "env": {
+        "NFL_MCP_SEASONS": "2020,2021,2022,2023,2024"
+      }
+    }
+  }
+}
