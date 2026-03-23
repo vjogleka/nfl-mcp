@@ -128,7 +128,7 @@ def load_player_stats(seasons: list[int]) -> pd.DataFrame:
 def load_seasonal_stats(seasons: list[int]) -> pd.DataFrame:
     """Download seasonal player stats."""
     logger.info(f"Downloading seasonal player stats for seasons: {seasons}")
-    stats = nfl.import_seasonal_data(seasons, downcast=True)
+    stats = nfl.import_seasonal_data(seasons)
     logger.info(f"Loaded {len(stats):,} player-season rows")
     return stats
 
