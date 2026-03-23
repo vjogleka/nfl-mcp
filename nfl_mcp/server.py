@@ -29,7 +29,8 @@ from pydantic import BaseModel, Field, ConfigDict
 from nfl_mcp.data import build_database, db_exists, get_db_path, get_seasons
 from nfl_mcp.glossary import get_glossary_text, resolve_team, TEAM_ALIASES, GLOSSARY
 from nfl_mcp.query_engine import QueryEngine
-from nfl_mcp.visualize import generate_qb_dashboard, generate_qb_comparison_dashboard
+# visualize module is used by CLI scripts (generate_dashboard.py, generate_comparison.py)
+# MCP tools return structured JSON data for Claude to visualize natively
 
 logger = logging.getLogger(__name__)
 
@@ -453,11 +454,14 @@ async def nfl_search_player(params: NflSearchPlayerInput, ctx: Context) -> str:
     engine = state.engine
 
     # Try rosters first (has most detail)
-    conditions = [f"player_name LIKE '%{params.name}%'"]
+    conditions = ["player_name LIKE ?"]
+    query_params = [f"%{params.name}%"]
     if params.position:
-        conditions.append(f"position = '{params.position.upper()}'")
+        conditions.append("position = ?")
+        query_params.append(params.position.upper())
     if params.season:
-        conditions.append(f"season = {params.season}")
+        conditions.append("season = ?")
+        query_params.append(params.season)
 
     where = " AND ".join(conditions)
     sql = (
@@ -466,20 +470,22 @@ async def nfl_search_player(params: NflSearchPlayerInput, ctx: Context) -> str:
         f"ORDER BY season DESC, player_name LIMIT 30"
     )
 
-    results = engine.execute_query(sql)
+    results = engine.execute_query(sql, tuple(query_params))
 
     if results["row_count"] == 0:
         # Fall back to player_stats table
-        conditions_ps = [f"player_name LIKE '%{params.name}%'"]
+        conditions_ps = ["player_name LIKE ?"]
+        query_params_ps = [f"%{params.name}%"]
         if params.season:
-            conditions_ps.append(f"season = {params.season}")
+            conditions_ps.append("season = ?")
+            query_params_ps.append(params.season)
         where_ps = " AND ".join(conditions_ps)
         sql_ps = (
             f"SELECT DISTINCT player_name, position, recent_team, season "
             f"FROM player_stats WHERE {where_ps} "
             f"ORDER BY season DESC, player_name LIMIT 30"
         )
-        results = engine.execute_query(sql_ps)
+        results = engine.execute_query(sql_ps, tuple(query_params_ps))
 
     if results["row_count"] == 0:
         return f"No players found matching '{params.name}'. Try a shorter search term."
@@ -579,9 +585,11 @@ async def nfl_roster(params: NflRosterInput, ctx: Context) -> str:
         else:
             return "No roster data available in the database."
 
-    conditions = [f"team = '{abbr}'", f"season = {season}"]
+    conditions = ["team = ?", "season = ?"]
+    query_params: list = [abbr, season]
     if params.position:
-        conditions.append(f"position = '{params.position.upper()}'")
+        conditions.append("position = ?")
+        query_params.append(params.position.upper())
 
     where = " AND ".join(conditions)
     sql = (
@@ -591,7 +599,7 @@ async def nfl_roster(params: NflRosterInput, ctx: Context) -> str:
         f"ORDER BY position, player_name LIMIT 200"
     )
 
-    results = engine.execute_query(sql)
+    results = engine.execute_query(sql, tuple(query_params))
 
     if results["row_count"] == 0:
         msg = f"No roster entries found for {abbr} in {season}"
@@ -611,7 +619,7 @@ async def nfl_roster(params: NflRosterInput, ctx: Context) -> str:
 @mcp.tool(
     name="nfl_visualize",
     annotations={
-        "title": "Generate Interactive QB Dashboard",
+        "title": "Get QB Season Data",
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
@@ -619,24 +627,22 @@ async def nfl_roster(params: NflRosterInput, ctx: Context) -> str:
     },
 )
 async def nfl_visualize(params: NflVisualizeInput, ctx: Context) -> str:
-    """Generate an interactive HTML dashboard for a QB's season performance.
+    """Get comprehensive season data for a QB, ready for visualization.
 
-    Creates a self-contained HTML page with inline SVG charts and JavaScript
-    interactivity. The dashboard includes:
-    - KPI cards with year-over-year changes
-    - EPA/play, CPOE, and success rate by week (with toggleable rolling averages)
-    - Passing yards, TDs, and INTs volume chart
-    - QB landscape scatter plot (CPOE vs EPA)
-    - Season comparison summary table
+    Returns structured JSON with weekly performance, season summaries, and
+    league-wide QB comparisons. Claude can use this data to create charts,
+    tables, and visualizations directly in the conversation.
 
-    All charts have hover tooltips and interactive toggle buttons. The HTML
-    file requires no external dependencies — just open in a browser.
+    Data includes:
+    - Weekly stats: EPA/play, CPOE, success rate, passing yards, TDs, INTs
+    - Season-over-season comparison for all available years
+    - QB landscape: all qualifying QBs that season for comparison scatter plots
 
     Args:
         params: NflVisualizeInput with player name, season, and options.
 
     Returns:
-        The generated HTML content as a string.
+        JSON with weekly_data, season_data, qb_landscape, and metadata.
     """
     state: AppState = ctx.request_context.lifespan_state
     engine = state.engine
@@ -649,93 +655,70 @@ async def nfl_visualize(params: NflVisualizeInput, ctx: Context) -> str:
     team_abbr = params.team
     if not team_abbr:
         team_result = engine.execute_query(
-            f"SELECT posteam FROM pbp WHERE passer_player_name = '{pname}' "
-            f"AND season = {season} AND posteam IS NOT NULL LIMIT 1"
+            "SELECT posteam FROM pbp WHERE passer_player_name = ? "
+            "AND season = ? AND posteam IS NOT NULL LIMIT 1",
+            (pname, season),
         )
         if team_result["rows"]:
             team_abbr = team_result["rows"][0]["posteam"]
 
-    # Fetch team colors
-    primary, accent = "#333333", "#e64100"
-    if team_abbr:
-        tc = engine.execute_query(
-            f"SELECT team_color, team_color2 FROM teams WHERE team_abbr = '{team_abbr}'"
-        )
-        if tc["rows"]:
-            primary = tc["rows"][0].get("team_color") or primary
-            accent = tc["rows"][0].get("team_color2") or accent
-
-    # Prepend '#' if missing
-    if primary and not primary.startswith("#"):
-        primary = "#" + primary
-    if accent and not accent.startswith("#"):
-        accent = "#" + accent
-
     # Weekly stats
-    weekly_result = engine.execute_query(f"""
-        SELECT week,
-               COUNT(*) as dropbacks,
-               AVG(qb_epa) as epa_play,
-               AVG(cpoe) as cpoe,
-               AVG(success) as success_rate,
-               AVG(CASE WHEN complete_pass=1 THEN 1.0 ELSE 0.0 END) as comp_pct,
-               SUM(passing_yards) as pass_yards,
-               SUM(touchdown) as tds,
-               SUM(interception) as ints
-        FROM pbp
-        WHERE passer_player_name = '{pname}' AND pass = 1
-              AND season = {season} AND season_type = 'REG'
-              AND qb_epa IS NOT NULL
-        GROUP BY week ORDER BY week
-    """)
+    weekly_result = engine.execute_query(
+        "SELECT week, COUNT(*) as dropbacks, "
+        "AVG(qb_epa) as epa_play, AVG(cpoe) as cpoe, "
+        "AVG(success) as success_rate, "
+        "AVG(CASE WHEN complete_pass=1 THEN 1.0 ELSE 0.0 END) as comp_pct, "
+        "SUM(passing_yards) as pass_yards, "
+        "SUM(touchdown) as tds, SUM(interception) as ints "
+        "FROM pbp "
+        "WHERE passer_player_name = ? AND pass = 1 "
+        "AND season = ? AND season_type = 'REG' "
+        "AND qb_epa IS NOT NULL "
+        "GROUP BY week ORDER BY week",
+        (pname, season),
+    )
 
     if weekly_result["row_count"] == 0:
         return f"No data found for {pname} in {season}. Check the player name with nfl_search_player."
 
-    weekly_data = weekly_result["rows"]
-
     # Season comparison (all seasons for this player)
-    season_result = engine.execute_query(f"""
-        SELECT season,
-               COUNT(*) as dropbacks,
-               AVG(qb_epa) as epa_play,
-               AVG(cpoe) as cpoe,
-               AVG(success) as success_rate,
-               SUM(passing_yards) as pass_yards,
-               SUM(touchdown) as tds,
-               SUM(interception) as ints
-        FROM pbp
-        WHERE passer_player_name = '{pname}' AND pass = 1
-              AND season_type = 'REG' AND qb_epa IS NOT NULL
-        GROUP BY season ORDER BY season
-    """)
-    season_data = season_result["rows"]
-
-    # QB comparison scatter
-    qb_result = engine.execute_query(f"""
-        SELECT passer_player_name as name,
-               COUNT(*) as dropbacks,
-               AVG(qb_epa) as epa_play,
-               AVG(cpoe) as cpoe
-        FROM pbp
-        WHERE pass = 1 AND season = {season} AND season_type = 'REG'
-              AND qb_epa IS NOT NULL AND passer_player_name IS NOT NULL
-        GROUP BY passer_player_name
-        HAVING COUNT(*) >= {params.min_dropbacks}
-        ORDER BY epa_play DESC
-    """)
-    qb_comparison = qb_result["rows"]
-
-    html = generate_qb_dashboard(
-        player_name=display,
-        weekly_data=weekly_data,
-        season_data=season_data,
-        qb_comparison=qb_comparison,
-        team_colors={"primary": primary, "accent": accent},
-        season=season,
+    season_result = engine.execute_query(
+        "SELECT season, COUNT(*) as dropbacks, "
+        "AVG(qb_epa) as epa_play, AVG(cpoe) as cpoe, "
+        "AVG(success) as success_rate, "
+        "SUM(passing_yards) as pass_yards, "
+        "SUM(touchdown) as tds, SUM(interception) as ints "
+        "FROM pbp "
+        "WHERE passer_player_name = ? AND pass = 1 "
+        "AND season_type = 'REG' AND qb_epa IS NOT NULL "
+        "GROUP BY season ORDER BY season",
+        (pname,),
     )
 
-    return html
+    # QB comparison scatter
+    qb_result = engine.execute_query(
+        "SELECT passer_player_name as name, COUNT(*) as dropbacks, "
+        "AVG(qb_epa) as epa_play, AVG(cpoe) as cpoe "
+        "FROM pbp "
+        "WHERE pass = 1 AND season = ? AND season_type = 'REG' "
+        "AND qb_epa IS NOT NULL AND passer_player_name IS NOT NULL "
+        "GROUP BY passer_player_name "
+        "HAVING COUNT(*) >= ? "
+        "ORDER BY epa_play DESC",
+        (season, params.min_dropbacks),
+    )
+
+    result = {
+        "player": display,
+        "player_code": pname,
+        "team": team_abbr,
+        "season": season,
+        "weekly_data": weekly_result["rows"],
+        "season_data": season_result["rows"],
+        "qb_landscape": qb_result["rows"],
+    }
+
+    return json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool(
@@ -749,22 +732,22 @@ async def nfl_visualize(params: NflVisualizeInput, ctx: Context) -> str:
     },
 )
 async def nfl_compare_qbs(params: NflCompareQBsInput, ctx: Context) -> str:
-    """Generate an interactive comparison dashboard for multiple QBs across seasons.
+    """Get comparison data for multiple QBs across seasons, ready for visualization.
 
-    Creates a self-contained HTML page comparing 2-10 QBs side by side with:
-    - Grouped bar charts for EPA/play, CPOE, and success rate by season
-    - CPOE vs EPA scatter plot with season toggle
-    - Weekly trend lines with metric and season selectors
-    - Full comparison table with year-over-year deltas
-    - QB toggle buttons to show/hide individual players
+    Returns structured JSON comparing 2-10 QBs side by side with season-level
+    and weekly stats. Claude can use this data to create charts, tables, and
+    visualizations directly in the conversation.
 
-    All charts have hover tooltips. Each QB uses their team's colors.
+    Data includes per-QB per-season:
+    - EPA/play, CPOE, success rate
+    - Passing yards, TDs, INTs, dropback count
+    - Weekly breakdowns for trend analysis
 
     Args:
         params: NflCompareQBsInput with player names, seasons, and options.
 
     Returns:
-        The generated HTML content as a string.
+        JSON with season_data, weekly_data, and qb_info for each player.
     """
     state: AppState = ctx.request_context.lifespan_state
     engine = state.engine
@@ -776,93 +759,77 @@ async def nfl_compare_qbs(params: NflCompareQBsInput, ctx: Context) -> str:
     if len(display_names) != len(players):
         display_names = players
 
-    # Build QB info with team colors
+    # Build QB info with teams
     qb_info = {}
     for i, pname in enumerate(players):
-        # Detect team from most recent season
         team_abbr = None
         for s in reversed(seasons):
             tr = engine.execute_query(
-                f"SELECT posteam FROM pbp WHERE passer_player_name = '{pname}' "
-                f"AND season = {s} AND posteam IS NOT NULL LIMIT 1"
+                "SELECT posteam FROM pbp WHERE passer_player_name = ? "
+                "AND season = ? AND posteam IS NOT NULL LIMIT 1",
+                (pname, s),
             )
             if tr["rows"]:
                 team_abbr = tr["rows"][0]["posteam"]
                 break
 
-        primary, accent = "#555555", "#999999"
-        if team_abbr:
-            tc = engine.execute_query(
-                f"SELECT team_color, team_color2 FROM teams WHERE team_abbr = '{team_abbr}'"
-            )
-            if tc["rows"]:
-                primary = tc["rows"][0].get("team_color") or primary
-                accent = tc["rows"][0].get("team_color2") or accent
-
-        if primary and not primary.startswith("#"):
-            primary = "#" + primary
-        if accent and not accent.startswith("#"):
-            accent = "#" + accent
-
         qb_info[pname] = {
             "display_name": display_names[i],
             "team": team_abbr or "?",
-            "primary": primary,
-            "accent": accent,
         }
 
-    # Season-level data
-    placeholders = ",".join(f"'{p}'" for p in players)
-    season_list = ",".join(str(s) for s in seasons)
+    # Season-level data using parameterized queries
+    player_placeholders = ",".join("?" for _ in players)
+    season_placeholders = ",".join("?" for _ in seasons)
+    bind_params = tuple(players) + tuple(seasons)
 
-    season_result = engine.execute_query(f"""
-        SELECT passer_player_name as name, season,
-               COUNT(*) as dropbacks,
-               AVG(qb_epa) as epa_play,
-               AVG(cpoe) as cpoe,
-               AVG(success) as success_rate,
-               SUM(passing_yards) as pass_yards,
-               SUM(touchdown) as tds,
-               SUM(interception) as ints
-        FROM pbp
-        WHERE passer_player_name IN ({placeholders})
-              AND pass = 1 AND season IN ({season_list})
-              AND season_type = 'REG' AND qb_epa IS NOT NULL
-        GROUP BY passer_player_name, season
-        ORDER BY passer_player_name, season
-    """)
+    season_result = engine.execute_query(
+        f"SELECT passer_player_name as name, season, "
+        f"COUNT(*) as dropbacks, "
+        f"AVG(qb_epa) as epa_play, AVG(cpoe) as cpoe, "
+        f"AVG(success) as success_rate, "
+        f"SUM(passing_yards) as pass_yards, "
+        f"SUM(touchdown) as tds, SUM(interception) as ints "
+        f"FROM pbp "
+        f"WHERE passer_player_name IN ({player_placeholders}) "
+        f"AND pass = 1 AND season IN ({season_placeholders}) "
+        f"AND season_type = 'REG' AND qb_epa IS NOT NULL "
+        f"GROUP BY passer_player_name, season "
+        f"ORDER BY passer_player_name, season",
+        bind_params,
+    )
 
     if season_result["row_count"] == 0:
         return "No data found for these players/seasons. Check names with nfl_search_player."
 
     # Weekly data
-    weekly_result = engine.execute_query(f"""
-        SELECT passer_player_name as name, season, week,
-               AVG(qb_epa) as epa_play,
-               AVG(cpoe) as cpoe,
-               AVG(success) as success_rate,
-               SUM(passing_yards) as pass_yards,
-               SUM(touchdown) as tds,
-               SUM(interception) as ints
-        FROM pbp
-        WHERE passer_player_name IN ({placeholders})
-              AND pass = 1 AND season IN ({season_list})
-              AND season_type = 'REG' AND qb_epa IS NOT NULL
-        GROUP BY passer_player_name, season, week
-        ORDER BY passer_player_name, season, week
-    """)
+    weekly_result = engine.execute_query(
+        f"SELECT passer_player_name as name, season, week, "
+        f"AVG(qb_epa) as epa_play, AVG(cpoe) as cpoe, "
+        f"AVG(success) as success_rate, "
+        f"SUM(passing_yards) as pass_yards, "
+        f"SUM(touchdown) as tds, SUM(interception) as ints "
+        f"FROM pbp "
+        f"WHERE passer_player_name IN ({player_placeholders}) "
+        f"AND pass = 1 AND season IN ({season_placeholders}) "
+        f"AND season_type = 'REG' AND qb_epa IS NOT NULL "
+        f"GROUP BY passer_player_name, season, week "
+        f"ORDER BY passer_player_name, season, week",
+        bind_params,
+    )
 
     title = params.title or f"QB Comparison: {', '.join(display_names)} ({' vs '.join(str(s) for s in seasons)})"
 
-    html = generate_qb_comparison_dashboard(
-        title=title,
-        qb_season_data=season_result["rows"],
-        qb_weekly_data=weekly_result["rows"],
-        qb_info=qb_info,
-        seasons=seasons,
-    )
+    result = {
+        "title": title,
+        "players": players,
+        "seasons": seasons,
+        "qb_info": qb_info,
+        "season_data": season_result["rows"],
+        "weekly_data": weekly_result["rows"],
+    }
 
-    return html
+    return json.dumps(result, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------
