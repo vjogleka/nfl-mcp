@@ -34,8 +34,10 @@ class QueryEngine:
     def connect(self) -> None:
         """Open a read-only connection to the database."""
         uri = f"file:{self.db_path}?mode=ro"
-        self._conn = sqlite3.connect(uri, uri=True)
+        self._conn = sqlite3.connect(uri, uri=True, timeout=30)
         self._conn.row_factory = sqlite3.Row
+        # Set a busy timeout and limit query execution time
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         logger.info(f"Connected to database (read-only): {self.db_path}")
 
     def close(self) -> None:

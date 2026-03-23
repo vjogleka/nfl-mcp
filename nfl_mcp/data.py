@@ -111,7 +111,7 @@ def _filter_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
 def load_pbp(seasons: list[int]) -> pd.DataFrame:
     """Download play-by-play data for given seasons."""
     logger.info(f"Downloading play-by-play data for seasons: {seasons}")
-    pbp = nfl.import_pbp_data(seasons, downcast=True, cache=False)
+    pbp = nfl.import_pbp_data(seasons, cache=False)
     pbp = _filter_columns(pbp, PBP_COLUMNS)
     logger.info(f"Loaded {len(pbp):,} plays across {len(seasons)} seasons")
     return pbp
@@ -120,7 +120,7 @@ def load_pbp(seasons: list[int]) -> pd.DataFrame:
 def load_player_stats(seasons: list[int]) -> pd.DataFrame:
     """Download weekly player stats."""
     logger.info(f"Downloading weekly player stats for seasons: {seasons}")
-    stats = nfl.import_weekly_data(seasons, downcast=True)
+    stats = nfl.import_weekly_data(seasons)
     logger.info(f"Loaded {len(stats):,} player-week rows")
     return stats
 
