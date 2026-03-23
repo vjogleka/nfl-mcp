@@ -4,7 +4,7 @@
       "command": "python",
       "args": ["-m", "nfl_mcp"],
       "env": {
-        "NFL_MCP_SEASONS": "2020,2021,2022,2023,2024"
+        "NFL_MCP_SEASONS": "2020,2021,2022,2023,2024,2025"
       }
     }
   }
